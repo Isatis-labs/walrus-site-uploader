@@ -1,5 +1,11 @@
 // src/components/FileUpload.js
-import React, { useEffect, useRef, useState } from 'react'
+import React, {
+  Dispatch,
+  SetStateAction,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import {
   Box,
   Button,
@@ -14,7 +20,13 @@ import {
   useSteps,
   useToast,
 } from '@chakra-ui/react'
-import { build_txn, FileContent, idToBase36 } from './utils'
+import {
+  build_txn,
+  FileContent,
+  get_file_hash,
+  addressToBase36,
+  readFileAsText,
+} from './utils'
 import { steps, UploadStepper } from './stepper'
 import {
   ConnectModal,
@@ -24,14 +36,6 @@ import {
 } from '@mysten/dapp-kit'
 import { PACKAGEID } from './const'
 
-const readFileAsText = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = reject
-    reader.readAsText(file)
-  })
-}
 const FileUpload = () => {
   const [files, setFiles] = useState<FileContent[] | null>(null)
   const toast = useToast()
@@ -66,19 +70,22 @@ const FileUpload = () => {
     ) {
       setActiveStep(2)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files])
 
   const handleFileChange = async (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
-    const files = Array.from(event?.currentTarget?.files || [])
+    const rawFiles = Array.from(event?.currentTarget?.files || [])
     const data: FileContent[] = []
-    for (const file of files) {
+    for (const file of rawFiles) {
       const content = await readFileAsText(file)
+      const fileHash = await get_file_hash(file)
       data.push({
         name: file.name,
         path: `${file.webkitRelativePath.split('/').slice(1).join('/')}`,
         content: content,
+        fileHash,
       })
     }
     console.log(data)
@@ -97,6 +104,7 @@ const FileUpload = () => {
     setUpload_loading(true)
 
     try {
+      // 直接异步干
       for (const e of data) {
         if (e.blobId) {
           continue
@@ -155,6 +163,7 @@ const FileUpload = () => {
       return {
         name: file.path,
         blobId: file.blobId!,
+        fileHash: file.fileHash,
       }
     })
 
@@ -165,7 +174,6 @@ const FileUpload = () => {
           data: files,
           owner: account?.address || '',
         }),
-        chain: 'sui:testnet',
       },
       {
         onSuccess: async (result) => {
@@ -187,7 +195,7 @@ const FileUpload = () => {
           if (object) {
             setObjectId('objectId' in object ? object.objectId : '')
             setUrl(
-              `https://${idToBase36('objectId' in object ? object.objectId : '')}.walrus.site/`,
+              `https://${addressToBase36('objectId' in object ? object.objectId : '')}.walrus.site/`,
             )
           }
           setActiveStep(3)
@@ -236,7 +244,10 @@ const FileUpload = () => {
           Click to upload the site folder
         </Text>
       </Flex>
-      <UploadStepper activeStep={activeStep} setActiveStep={setActiveStep} />
+      <UploadStepper
+        activeStep={activeStep}
+        setActiveStep={setActiveStep as Dispatch<SetStateAction<number>>}
+      />
       {activeStep != 0 && (
         <Button
           colorScheme="teal"

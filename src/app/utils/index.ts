@@ -3,16 +3,30 @@ import { bcs } from '@mysten/bcs'
 import { Base64 } from 'js-base64'
 import { PACKAGEID } from '../const'
 import { Transaction } from '@mysten/sui/transactions'
-import { Buffer } from 'buffer'
-
+import mime from 'mime'
 export interface FileContent {
   name: string
   path: string
   content: string
+  fileHash: string
   blobId?: string
   upload_waiting?: boolean
 }
 
+export const readFileAsText = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsText(file)
+  })
+}
+
+/**
+ * blobid转u256
+ * @param blobId
+ * @returns u256
+ */
 export function get_blob(base64_blob: string): string {
   return bcs.u256().fromHex(
     U256.deserialize(new Deserializer(Base64.toUint8Array(base64_blob)))
@@ -21,61 +35,43 @@ export function get_blob(base64_blob: string): string {
   )
 }
 
-const mimeTypes = {
-  '.html': 'text/html',
-  '.css': 'text/css',
-  '.js': 'application/javascript',
-  '.json': 'application/json',
-  '.xml': 'application/xml',
-  '.csv': 'text/csv',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.svg': 'image/svg+xml',
-  '.webp': 'image/webp',
-  '.ico': 'image/x-icon',
-  '.pdf': 'application/pdf',
-  '.txt': 'text/plain',
-  '.md': 'text/markdown',
-  '.zip': 'application/zip',
-  '.tar': 'application/x-tar',
-  '.gz': 'application/gzip',
-  '.bz2': 'application/x-bzip2',
-  '.xz': 'application/x-xz',
-  '.rar': 'application/x-rar-compressed',
-  '.7z': 'application/x-7z-compressed',
-  '.doc': 'application/msword',
-  '.docx':
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.xls': 'application/vnd.ms-excel',
-  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  '.ppt': 'application/vnd.ms-powerpoint',
-  '.pptx':
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.ogg': 'audio/ogg',
-  '.mp4': 'video/mp4',
-  '.webm': 'video/webm',
-  '.avi': 'video/x-msvideo',
-  '.mkv': 'video/x-matroska',
-  '.mov': 'video/quicktime',
-  '.flv': 'video/x-flv',
-  '.mpeg': 'video/mpeg',
-  '.mpg': 'video/mpeg',
-  '.ts': 'video/mp2t',
+/**
+ * 文件转256
+ * @param file 文件
+ * @returns 文件转u256
+ */
+export const get_file_hash = async (file: File) => {
+  // 读取文件内容为 ArrayBuffer
+  const arrayBuffer = await file.arrayBuffer()
+
+  // 使用 Web Crypto API 计算哈希
+  const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer)
+
+  // 将哈希值转换为十六进制字符串
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  return bcs
+    .u256()
+    .fromHex(
+      hashArray.map((byte) => byte.toString(16).padStart(2, '0')).join(''),
+    )
 }
 
-export function getMimeType(filename: string) {
-  const ext = filename
-    .slice(((filename.lastIndexOf('.') - 1) >>> 0) + 2)
-    .toLowerCase()
-  return (
-    mimeTypes[`.${ext}` as keyof typeof mimeTypes] || 'application/octet-stream'
-  )
+/**
+ * objectId转base36
+ * @param str objectid 0xf4295211a0e122e2cee6d1a31d3557d8a5878b0d5aa278c298b86bc6dfdad70d
+ * @returns base64编码 632r7wi80x67dwpwnb6ujznedzjcivr0jik0g6hzuz5peijaq5
+ */
+export const addressToBase36 = (str: string) => {
+  // https://sdk.mystenlabs.com/bcs#transforms
+  const hex = BigInt(str)
+  return hex.toString(36)
 }
 
+/**
+ * 构建交易
+ * @param param0 data-文件数据 owner-钱包地址
+ * @returns txb
+ */
 export function build_txn({
   data,
   owner,
@@ -83,6 +79,7 @@ export function build_txn({
   data: {
     name: string
     blobId: string
+    fileHash: string
   }[]
   owner: string
 }): Transaction {
@@ -91,58 +88,58 @@ export function build_txn({
     package: PACKAGEID,
     module: 'site',
     function: 'new_site',
-    arguments: [txb.pure.string('MyFirst')],
+    arguments: [txb.pure.string('test page')],
   })
-
-  for (const v of data) {
-    const html = txb.moveCall({
+  data.forEach((item) => {
+    // 先调用new_range_option
+    const newRange = txb.moveCall({
+      package: PACKAGEID,
+      module: 'site',
+      function: 'new_range_option',
+      arguments: [txb.pure.vector('u64', []), txb.pure.vector('u64', [])],
+    })
+    // 再调用 new_resource
+    const resource = txb.moveCall({
       package: PACKAGEID,
       module: 'site',
       function: 'new_resource',
       arguments: [
-        txb.pure.string(`/${v.name}`),
-        txb.pure.string(getMimeType(v.name)),
-        txb.pure.string('plaintext'),
-        txb.pure.u256(get_blob(v.blobId)),
+        txb.pure.string(`/${item.name}`),
+        txb.pure.u256(get_blob(item.blobId)),
+        txb.pure.u256(item.fileHash),
+        newRange,
+      ],
+    })
+    // 再调用 add_header content-encoding: identity
+    txb.moveCall({
+      package: PACKAGEID,
+      module: 'site',
+      function: 'add_header',
+      arguments: [
+        resource,
+        txb.pure.string('content-encoding'),
+        txb.pure.string('identity'),
+      ],
+    })
+    // 再调用 add_header mime
+    txb.moveCall({
+      package: PACKAGEID,
+      module: 'site',
+      function: 'add_header',
+      arguments: [
+        resource,
+        txb.pure.string('content-type'),
+        txb.pure.string(mime.getType(item.name) || ''),
       ],
     })
     txb.moveCall({
       package: PACKAGEID,
       module: 'site',
       function: 'add_resource',
-      arguments: [site, html],
+      arguments: [site, resource],
     })
-  }
+  })
 
   txb.transferObjects([site], txb.pure.address(owner))
   return txb
-}
-
-export function idToBase36(id: string): string {
-  const BASE36 = '0123456789abcdefghijklmnopqrstuvwxyz'
-  const base = BASE36.length
-  const source = Buffer.from(id.replace('0x', ''), 'hex')
-  const size = source.length * 2
-  const encoding = new Array(size).fill(0)
-  let high = size - 1
-
-  for (const digit of source) {
-    let carry = digit
-    let it = size - 1
-    while (it > high || carry !== 0) {
-      carry += 256 * encoding[it]
-      encoding[it] = carry % base
-      carry = Math.floor(carry / base)
-      it -= 1
-    }
-    high = it
-  }
-
-  const skip = encoding.findIndex((value) => value !== 0)
-  const string = encoding
-    .slice(skip)
-    .map((c) => BASE36[c])
-    .join('')
-
-  return string
 }
